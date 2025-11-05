@@ -14,14 +14,14 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 
-(async () => {
-    try {
-        await pool.query('SELECT 1 + 1 AS solution');
-        console.log('Connected to MySQL database');
-    } catch (err) {
-        console.error('Error connecting to MySQL:', err);
-    }
-})();
+// (async () => {
+//     try {
+//         await pool.query('SELECT 1 + 1 AS solution');
+//         console.log('Connected to MySQL database');
+//     } catch (err) {
+//         console.error('Error connecting to MySQL:', err);
+//     }
+// })();
 
 
 
@@ -51,3 +51,4 @@ const PORT = process.env.PORT || 8989;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
+
