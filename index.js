@@ -23,7 +23,10 @@ app.use(express.urlencoded({ extended: true }));
 //     }
 // })();
 
-
+app.post("/", async (req, res) => {
+  
+  res.json({ res: "working" });
+});
 
 
 app.post("/sso/metabase", async (req, res) => {
@@ -51,5 +54,6 @@ const PORT = process.env.PORT || 8989;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
+
 
 
