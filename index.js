@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import pool from './database.js';
+// import pool from './database.js';
 import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 
@@ -51,4 +51,5 @@ const PORT = process.env.PORT || 8989;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
+
 
