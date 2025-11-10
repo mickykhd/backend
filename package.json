@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon script.js"
   },
   "dependencies": {
     "body-parser": "^2.2.0",
