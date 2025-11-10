@@ -15,7 +15,6 @@ dotenv.config();
 // CONFIGURATION
 // ========================
 
-const METABASE_SECRET ="81c3e7b911763a085de35da6b7bd62a4e4b46c2a5c4eabf663dbca834d4c5b82";
 const METABASE_URL = "https://analytics.soffront.com";
 const METABASE_API_KEY = "mb_7D5li70kINfHbA+sXVnvt5eZaUcdzJByRye2HrJY09E=";
 const TEMPLATE_DASHBOARD_ID = process.env.TEMPLATE_DASHBOARD_ID || 16;
@@ -121,7 +120,7 @@ function generateMetabaseJWT(projectId, firstName = "User", lastName = "Soffront
     tenant_id: projectId,  // For RLS filtering
   };
 
-  return jwt.sign(payload, METABASE_SECRET, { expiresIn: '24h' });
+  return jwt.sign(payload, process.env.METABASE_SECRET, { expiresIn: '24h' });
 }
 
 // ==========================================
@@ -203,4 +202,5 @@ app.listen(PORT, () => {
   console.log(" GET  /api/dashboard-mapping → View mapping");
   console.log(" GET  /health                → Health check");
   console.log("==============================================\n");
+
 });
