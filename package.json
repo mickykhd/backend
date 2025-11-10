@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Minimal Express server using ES modules (ES6)",
   "type": "module",
-  "main": "index.js",
+  "main": "script.js",
   "scripts": {
     "start": "node script.js",
     "dev": "nodemon script.js"
