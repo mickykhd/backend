@@ -43,13 +43,13 @@ async function duplicateDashboard(projectId) {
   try {
     console.log(`\n📋 Duplicating dashboard ${TEMPLATE_DASHBOARD_ID} for project ${projectId}...`);
 
-    // ✅ KEY: Use is_deep_copy: true to duplicate with all questions
+    // ✅ Use is_deep_copy: false to reuse the same questions
     const response = await axios.post(
       `${METABASE_URL}/api/dashboard/${TEMPLATE_DASHBOARD_ID}/copy`,
       {
         name: `Tenant ${projectId} Dashboard`,
         description: `Dashboard for tenant ${projectId}`,
-        is_deep_copy: true,  // ✅ CRITICAL: This allows deep copy with questions
+        is_deep_copy: false,  // ✅ Only copy dashboard, not questions
       },
       {
         headers: {
@@ -70,6 +70,7 @@ async function duplicateDashboard(projectId) {
     throw error;
   }
 }
+
 
 // ==========================================
 // FUNCTION 2: Get or Create Dashboard ID
@@ -201,4 +202,5 @@ app.listen(PORT, () => {
   console.log("==============================================\n");
 
 });
+
 
