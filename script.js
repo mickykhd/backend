@@ -1,6 +1,6 @@
 // ==========================================
 // COMPLETE BACKEND: Metabase SSO + Auto Dashboard Creation
-// Fixed version that handles dashboard questions
+// MongoDB Version - Replaces in-memory storage
 // ==========================================
 
 import express from 'express';
@@ -8,6 +8,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
+import mongoose from 'mongoose';
+import DashboardMapping from './models/DashboardMapping.js';
 
 dotenv.config();
 
@@ -19,13 +21,59 @@ const METABASE_URL = "https://analytics.soffront.com";
 const METABASE_API_KEY = "mb_7D5li70kINfHbA+sXVnvt5eZaUcdzJByRye2HrJY09E=";
 const TEMPLATE_DASHBOARD_ID = process.env.TEMPLATE_DASHBOARD_ID || 57;
 const PORT = process.env.PORT || 8989;
+const MONGODB_URI = process.env.MONGODB_URI;
 
 // ==========================================
-// IN-MEMORY STORAGE
+// MONGODB CONNECTION
 // ==========================================
-let dashboardMap = {
-  
+const connectDB = async () => {
+  try {
+    await mongoose.connect(MONGODB_URI, {
+      dbName: 'CRUD_DB'
+    });
+    
+    console.log('✅ MongoDB Atlas Connected Successfully');
+    console.log('📊 Database: CRUD_DB');
+    console.log('📁 Collection: metabase');
+    
+    // Initialize default mappings (optional)
+    await initializeDefaultMappings();
+  } catch (error) {
+    console.error('❌ MongoDB Connection Error:', error.message);
+    process.exit(1);
+  }
 };
+
+// Handle connection events
+mongoose.connection.on('error', (err) => {
+  console.error('❌ Mongoose connection error:', err);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('⚠️ Mongoose disconnected');
+});
+
+// ==========================================
+// INITIALIZE DEFAULT MAPPINGS (Optional)
+// ==========================================
+async function initializeDefaultMappings() {
+  try {
+    const defaultMappings = [
+     
+    ];
+
+    for (const mapping of defaultMappings) {
+      await DashboardMapping.findOneAndUpdate(
+        { projectId: mapping.projectId },
+        mapping,
+        { upsert: true, new: true }
+      );
+    }
+    console.log('✅ Default mappings initialized');
+  } catch (error) {
+    console.error('⚠️ Error initializing mappings:', error.message);
+  }
+}
 
 // ==========================================
 // EXPRESS SERVER SETUP
@@ -43,13 +91,12 @@ async function duplicateDashboard(projectId) {
   try {
     console.log(`\n📋 Duplicating dashboard ${TEMPLATE_DASHBOARD_ID} for project ${projectId}...`);
 
-    // ✅ Use is_deep_copy: false to reuse the same questions
     const response = await axios.post(
       `${METABASE_URL}/api/dashboard/${TEMPLATE_DASHBOARD_ID}/copy`,
       {
         name: `Tenant ${projectId} Dashboard`,
         description: `Dashboard for tenant ${projectId}`,
-        is_deep_copy: false,  // ✅ Only copy dashboard, not questions
+        is_deep_copy: true,
       },
       {
         headers: {
@@ -73,29 +120,42 @@ async function duplicateDashboard(projectId) {
 
 
 // ==========================================
-// FUNCTION 2: Get or Create Dashboard ID
+// FUNCTION 2: Get or Create Dashboard ID (MongoDB Version)
 // ==========================================
 async function getOrCreateDashboardId(projectId) {
   try {
-    // Check if already exists
-    if (dashboardMap[projectId]) {
-      console.log(`✅ Dashboard found in mapping. Project ${projectId} → ${dashboardMap[projectId]}`);
-      return dashboardMap[projectId];
+    // Convert to number
+    const projectIdNum = Number(projectId);
+    
+    if (isNaN(projectIdNum)) {
+      throw new Error(`Invalid project_id: ${projectId}`);
     }
 
-    console.log(`📋 No dashboard for project ${projectId}. Creating one...`);
+    // ✅ Check if mapping exists in MongoDB
+    let mapping = await DashboardMapping.findOne({ projectId: projectIdNum });
+
+    if (mapping) {
+      console.log(`✅ Dashboard found in DB. Project ${projectIdNum} → ${mapping.dashboardId}`);
+      return mapping.dashboardId;
+    }
+
+    console.log(`📋 No dashboard for project ${projectIdNum}. Creating one...`);
 
     if (!METABASE_API_KEY) {
       throw new Error("METABASE_API_KEY not configured in .env");
     }
 
-    // ✅ Duplicate the dashboard
-    const newDashboardId = await duplicateDashboard(projectId);
+    // Duplicate the dashboard
+    const newDashboardId = await duplicateDashboard(projectIdNum);
 
-    // Store in mapping
-    dashboardMap[projectId] = newDashboardId;
-    console.log(`✅ Stored: ${projectId} → ${newDashboardId}\n`);
+    // ✅ Save to MongoDB
+    mapping = await DashboardMapping.findOneAndUpdate(
+      { projectId: projectIdNum },
+      { projectId: projectIdNum, dashboardId: newDashboardId },
+      { upsert: true, new: true }
+    );
 
+    console.log(`✅ Stored in MongoDB: ${projectIdNum} → ${newDashboardId}\n`);
     return newDashboardId;
   } catch (error) {
     console.error("❌ Error in getOrCreateDashboardId:", error.message);
@@ -115,7 +175,7 @@ function generateMetabaseJWT(projectId, firstName = "User", lastName = "Soffront
     last_name: lastName,
     groups: ["All Users"],
     project_id: projectId,
-    tenant_id: projectId,  // For RLS filtering
+    tenant_id: projectId,
   };
 
   return jwt.sign(payload, process.env.METABASE_SECRET, { expiresIn: '24h' });
@@ -169,39 +229,112 @@ app.post("/sso/metabase", async (req, res) => {
 });
 
 // ==========================================
-// ENDPOINT 3: Get Mapping
+// ENDPOINT 3: Get All Mappings (MongoDB Version)
 // GET /api/dashboard-mapping
 // ==========================================
-app.get("/api/dashboard-mapping", (req, res) => {
-  res.json({ mapping: dashboardMap });
+app.get("/api/dashboard-mapping", async (req, res) => {
+  try {
+    // ✅ Get all mappings from MongoDB
+    const mappings = await DashboardMapping.find({}).sort({ createdAt: -1 });
+    
+    // Convert to old format for compatibility
+    const mappingObject = {};
+    mappings.forEach(m => {
+      mappingObject[m.projectId] = m.dashboardId;
+    });
+    
+    res.json({ 
+      mapping: mappingObject,
+      total: mappings.length,
+      details: mappings
+    });
+  } catch (error) {
+    console.error("Error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ==========================================
-// ENDPOINT 4: Health Check
+// ENDPOINT 4: Delete Mapping (New)
+// DELETE /api/dashboard-mapping/:projectId
+// ==========================================
+app.delete("/api/dashboard-mapping/:projectId", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const projectIdNum = Number(projectId);
+    
+    if (isNaN(projectIdNum)) {
+      return res.status(400).json({ error: "Invalid project_id" });
+    }
+    
+    // ✅ Delete from MongoDB
+    const result = await DashboardMapping.findOneAndDelete({ projectId: projectIdNum });
+    
+    if (!result) {
+      return res.status(404).json({ error: "Mapping not found" });
+    }
+    
+    res.json({ 
+      message: "Mapping deleted successfully", 
+      deleted: result 
+    });
+  } catch (error) {
+    console.error("Error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// ENDPOINT 5: Health Check
 // GET /health
 // ==========================================
-app.get("/health", (req, res) => {
-  res.json({ 
-    status: "ok",
-    dashboards: Object.keys(dashboardMap).length,
-    timestamp: new Date().toISOString()
-  });
+app.get("/health", async (req, res) => {
+  try {
+    const count = await DashboardMapping.countDocuments();
+    res.json({ 
+      status: "ok",
+      database: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+      dashboards: count,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: "error",
+      error: error.message 
+    });
+  }
 });
 
 // ==========================================
 // START SERVER
 // ==========================================
-app.listen(PORT, () => {
-  console.log("\n==============================================");
-  console.log(`🚀 Metabase SSO Server running on port ${PORT}`);
-  console.log("\nEndpoints:");
-  console.log(" POST /api/dashboard-id      → Get/Create dashboard");
-  console.log(" POST /sso/metabase          → Get JWT token");
-  console.log(" GET  /api/dashboard-mapping → View mapping");
-  console.log(" GET  /health                → Health check");
-  console.log("==============================================\n");
+const startServer = async () => {
+  try {
+    await connectDB();
+    
+    app.listen(PORT, () => {
+      console.log("\n==============================================");
+      console.log(`🚀 Metabase SSO Server running on port ${PORT}`);
+      console.log("\nEndpoints:");
+      console.log(" POST   /api/dashboard-id             → Get/Create dashboard");
+      console.log(" POST   /sso/metabase                 → Get JWT token");
+      console.log(" GET    /api/dashboard-mapping        → View all mappings");
+      console.log(" DELETE /api/dashboard-mapping/:id    → Delete mapping");
+      console.log(" GET    /health                       → Health check");
+      console.log("==============================================\n");
+    });
+  } catch (err) {
+    console.error("❌ Failed to start server:", err);
+    process.exit(1);
+  }
+};
 
+// Handle graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\n⚠️ Shutting down gracefully...');
+  await mongoose.connection.close();
+  console.log('✅ MongoDB connection closed');
+  process.exit(0);
 });
 
-
-
+startServer();
