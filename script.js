@@ -19,7 +19,7 @@ dotenv.config();
 
 const METABASE_URL = "https://analytics.soffront.com";
 const METABASE_API_KEY = "mb_7D5li70kINfHbA+sXVnvt5eZaUcdzJByRye2HrJY09E=";
-const TEMPLATE_DASHBOARD_ID = process.env.TEMPLATE_DASHBOARD_ID || 95;
+const TEMPLATE_DASHBOARD_ID = process.env.TEMPLATE_DASHBOARD_ID || 71;
 const PORT = process.env.PORT || 8989;
 const MONGODB_URI = process.env.MONGODB_URI;
 
@@ -338,5 +338,6 @@ process.on('SIGINT', async () => {
 });
 
 startServer();
+
 
 
