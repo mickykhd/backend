@@ -31,11 +31,11 @@ const connectDB = async () => {
     await mongoose.connect(MONGODB_URI, {
       dbName: 'CRUD_DB'
     });
-    
+
     console.log('✅ MongoDB Atlas Connected Successfully');
     console.log('📊 Database: CRUD_DB');
     console.log('📁 Collection: metabase');
-    
+
     // Initialize default mappings (optional)
     await initializeDefaultMappings();
   } catch (error) {
@@ -59,7 +59,7 @@ mongoose.connection.on('disconnected', () => {
 async function initializeDefaultMappings() {
   try {
     const defaultMappings = [
-     
+
     ];
 
     for (const mapping of defaultMappings) {
@@ -126,7 +126,7 @@ async function getOrCreateDashboardId(projectId) {
   try {
     // Convert to number
     const projectIdNum = Number(projectId);
-    
+
     if (isNaN(projectIdNum)) {
       throw new Error(`Invalid project_id: ${projectId}`);
     }
@@ -166,16 +166,16 @@ async function getOrCreateDashboardId(projectId) {
 // ==========================================
 // FUNCTION 3: Generate JWT Token
 // ==========================================
-function generateMetabaseJWT(projectId, firstName = "User", lastName = "Soffront", email = null) {
+function generateMetabaseJWT(projectId, firstName = "User", lastName = "Soffront", email = null, email_id = null) {
   const userEmail = email || `tenant-${projectId}@soffront.com`;
 
   const payload = {
-    email: userEmail,
+    email: email_id,
     first_name: firstName,
     last_name: lastName,
     groups: ["All Users"],
     project_id: projectId,
-    tenant_id: projectId,
+    email_id
   };
 
   return jwt.sign(payload, process.env.METABASE_SECRET, { expiresIn: '24h' });
@@ -209,7 +209,7 @@ app.post("/api/dashboard-id", async (req, res) => {
 // ==========================================
 app.post("/sso/metabase", async (req, res) => {
   try {
-    const { project_id, first_name, last_name, email } = req.body;
+    const { project_id, first_name, last_name, email, email_id } = req.body;
 
     if (!project_id) {
       return res.status(400).json({ error: "Missing project_id" });
@@ -218,7 +218,7 @@ app.post("/sso/metabase", async (req, res) => {
     console.log(`\n🔐 SSO request: ${project_id}`);
 
     const dashboardId = await getOrCreateDashboardId(project_id);
-    const token = generateMetabaseJWT(project_id, first_name, last_name, email);
+    const token = generateMetabaseJWT(project_id, first_name, last_name, email, email_id);
 
     console.log(`✅ JWT generated for dashboard ${dashboardId}`);
     res.json({ jwt: token });
@@ -236,14 +236,14 @@ app.get("/api/dashboard-mapping", async (req, res) => {
   try {
     // ✅ Get all mappings from MongoDB
     const mappings = await DashboardMapping.find({}).sort({ createdAt: -1 });
-    
+
     // Convert to old format for compatibility
     const mappingObject = {};
     mappings.forEach(m => {
       mappingObject[m.projectId] = m.dashboardId;
     });
-    
-    res.json({ 
+
+    res.json({
       mapping: mappingObject,
       total: mappings.length,
       details: mappings
@@ -262,21 +262,21 @@ app.delete("/api/dashboard-mapping/:projectId", async (req, res) => {
   try {
     const { projectId } = req.params;
     const projectIdNum = Number(projectId);
-    
+
     if (isNaN(projectIdNum)) {
       return res.status(400).json({ error: "Invalid project_id" });
     }
-    
+
     // ✅ Delete from MongoDB
     const result = await DashboardMapping.findOneAndDelete({ projectId: projectIdNum });
-    
+
     if (!result) {
       return res.status(404).json({ error: "Mapping not found" });
     }
-    
-    res.json({ 
-      message: "Mapping deleted successfully", 
-      deleted: result 
+
+    res.json({
+      message: "Mapping deleted successfully",
+      deleted: result
     });
   } catch (error) {
     console.error("Error:", error.message);
@@ -291,16 +291,16 @@ app.delete("/api/dashboard-mapping/:projectId", async (req, res) => {
 app.get("/health", async (req, res) => {
   try {
     const count = await DashboardMapping.countDocuments();
-    res.json({ 
+    res.json({
       status: "ok",
       database: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
       dashboards: count,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    res.status(500).json({ 
+    res.status(500).json({
       status: "error",
-      error: error.message 
+      error: error.message
     });
   }
 });
@@ -311,7 +311,7 @@ app.get("/health", async (req, res) => {
 const startServer = async () => {
   try {
     await connectDB();
-    
+
     app.listen(PORT, () => {
       console.log("\n==============================================");
       console.log(`🚀 Metabase SSO Server running on port ${PORT}`);
