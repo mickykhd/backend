@@ -1,8 +1,3 @@
-// ==========================================
-// COMPLETE BACKEND: Metabase SSO + Auto Dashboard Creation
-// MongoDB Version - Replaces in-memory storage
-// ==========================================
-
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -13,332 +8,179 @@ import DashboardMapping from './models/DashboardMapping.js';
 
 dotenv.config();
 
-// ========================
-// CONFIGURATION
-// ========================
-
-const METABASE_URL = "https://analytics.soffront.com";
-const METABASE_API_KEY = "mb_7D5li70kINfHbA+sXVnvt5eZaUcdzJByRye2HrJY09E=";
-const TEMPLATE_DASHBOARD_ID = process.env.TEMPLATE_DASHBOARD_ID || 106;
+// --- Configuration ---
 const PORT = process.env.PORT || 8989;
-const MONGODB_URI = process.env.MONGODB_URI;
+const METABASE_URL = "https://analytics.soffront.com";
 
-// ==========================================
-// MONGODB CONNECTION
-// ==========================================
-const connectDB = async () => {
-  try {
-    await mongoose.connect(MONGODB_URI, {
-      dbName: 'CRUD_DB'
-    });
-
-    console.log('✅ MongoDB Atlas Connected Successfully');
-    console.log('📊 Database: CRUD_DB');
-    console.log('📁 Collection: metabase');
-
-    // Initialize default mappings (optional)
-    await initializeDefaultMappings();
-  } catch (error) {
-    console.error('❌ MongoDB Connection Error:', error.message);
-    process.exit(1);
-  }
+const CONFIG_MAP = {
+  Sales: { templateId: 71, folderId: 17 },
+  Marketing: { templateId: 176, folderId: 20 },
+  Operations: { templateId: 106, folderId: 19 },
 };
 
-// Handle connection events
-mongoose.connection.on('error', (err) => {
-  console.error('❌ Mongoose connection error:', err);
-});
+const API_HEADERS = {
+  "x-api-key": process.env.METABASE_API_KEY,
+  "Content-Type": "application/json"
+};
 
-mongoose.connection.on('disconnected', () => {
-  console.log('⚠️ Mongoose disconnected');
-});
-
-// ==========================================
-// INITIALIZE DEFAULT MAPPINGS (Optional)
-// ==========================================
-async function initializeDefaultMappings() {
-  try {
-    const defaultMappings = [
-
-    ];
-
-    for (const mapping of defaultMappings) {
-      await DashboardMapping.findOneAndUpdate(
-        { projectId: mapping.projectId },
-        mapping,
-        { upsert: true, new: true }
-      );
-    }
-    console.log('✅ Default mappings initialized');
-  } catch (error) {
-    console.error('⚠️ Error initializing mappings:', error.message);
-  }
-}
-
-// ==========================================
-// EXPRESS SERVER SETUP
-// ==========================================
+// --- Database & Server Init ---
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// ==========================================
-// FUNCTION 1: Duplicate Dashboard via API
-// Uses is_deep_copy: true for proper duplication
-// ==========================================
-async function duplicateDashboard(projectId) {
+mongoose.connect(process.env.MONGODB_URI, { dbName: 'CRUD_DB' })
+  .then(() => console.log('✅ MongoDB Connected'))
+  .catch(err => { console.error('❌ DB Error:', err); process.exit(1); });
+
+// --- Helper Functions ---
+
+/** 1. Create Collection (Folder) - MOVED TO TOP */
+const createCollection = async (projectId, parentFolderId) => {
   try {
-    console.log(`\n📋 Duplicating dashboard ${TEMPLATE_DASHBOARD_ID} for project ${projectId}...`);
-
-    const response = await axios.post(
-      `${METABASE_URL}/api/dashboard/${TEMPLATE_DASHBOARD_ID}/copy`,
+    const { data } = await axios.post(
+      `${METABASE_URL}/api/collection`,
       {
-        name: `Tenant ${projectId} Dashboard`,
-        description: `Dashboard for tenant ${projectId}`,
-        is_deep_copy: true,
+        name: `${projectId}`,
+        description: `Dashboard collection for project ${projectId}`,
+        parent_id: parentFolderId,
+        color: "#509EE3"
       },
-      {
-        headers: {
-          "x-api-key": METABASE_API_KEY,
-          "Content-Type": "application/json",
-        },
-      }
+      { headers: API_HEADERS }
     );
-
-    const newDashboardId = response.data.id;
-    console.log(`✅ Dashboard duplicated successfully! New ID: ${newDashboardId}`);
-    return newDashboardId;
+    return data.id;
   } catch (error) {
-    console.error("❌ Error duplicating dashboard:", error.message);
-    if (error.response?.data) {
-      console.error("Response:", error.response.data);
-    }
+    console.error("Error creating collection:", error.response?.data || error.message);
     throw error;
   }
-}
+};
 
+/** 2. Provision Dashboard (Create Folder First -> Then Copy Content Into It) */
+const provisionDashboard = async (projectId, moduleName) => {
+  const config = CONFIG_MAP[moduleName];
+  if (!config) throw new Error(`Invalid module: ${moduleName}`);
 
-// ==========================================
-// FUNCTION 2: Get or Create Dashboard ID (MongoDB Version)
-// ==========================================
-async function getOrCreateDashboardId(projectId) {
-  try {
-    // Convert to number
-    const projectIdNum = Number(projectId);
+  console.log(`⚙️ Provisioning ${moduleName} for Project ${projectId}...`);
 
-    if (isNaN(projectIdNum)) {
-      throw new Error(`Invalid project_id: ${projectId}`);
-    }
+  // STEP 1: Create the Tenant Folder first
+  const newCollectionId = await createCollection(projectId, config.folderId);
+  console.log(`✅ Folder Created: ${newCollectionId}`);
 
-    // ✅ Check if mapping exists in MongoDB
-    let mapping = await DashboardMapping.findOne({ projectId: projectIdNum });
+  // STEP 2: Duplicate Template directly INTO the new folder
+  // By passing 'collection_id', Metabase puts the Dash AND Questions inside it.
+  const { data: copyData } = await axios.post(
+    `${METABASE_URL}/api/dashboard/${config.templateId}/copy`,
+    {
+      name: `Tenant ${projectId} - ${moduleName}`,
+      description: `Generated dashboard for ${projectId}`,
+      is_deep_copy: true,
+      collection_id: newCollectionId // <--- CRITICAL FIX HERE
+    },
+    { headers: API_HEADERS }
+  );
 
-    if (mapping) {
-      console.log(`✅ Dashboard found in DB. Project ${projectIdNum} → ${mapping.dashboardId}`);
-      return mapping.dashboardId;
-    }
+  const newDashboardId = copyData.id;
+  console.log(`✅ Dashboard ${newDashboardId} created inside Folder ${newCollectionId}`);
 
-    console.log(`📋 No dashboard for project ${projectIdNum}. Creating one...`);
+  return newDashboardId;
+};
 
-    if (!METABASE_API_KEY) {
-      throw new Error("METABASE_API_KEY not configured in .env");
-    }
+/** Retrieves ID from DB or creates a new dashboard if missing */
+const resolveDashboardId = async (projectId, moduleName) => {
+  const pid = Number(projectId);
+  if (isNaN(pid)) throw new Error("Invalid Project ID");
 
-    // Duplicate the dashboard
-    const newDashboardId = await duplicateDashboard(projectIdNum);
+  // Check DB
+  const mapping = await DashboardMapping.findOne({ projectId: pid });
+  if (mapping?.dashboardId?.[moduleName]) return mapping.dashboardId[moduleName];
 
-    // ✅ Save to MongoDB
-    mapping = await DashboardMapping.findOneAndUpdate(
-      { projectId: projectIdNum },
-      { projectId: projectIdNum, dashboardId: newDashboardId },
-      { upsert: true, new: true }
-    );
+  // Provision if missing
+  const newId = await provisionDashboard(pid, moduleName);
 
-    console.log(`✅ Stored in MongoDB: ${projectIdNum} → ${newDashboardId}\n`);
-    return newDashboardId;
-  } catch (error) {
-    console.error("❌ Error in getOrCreateDashboardId:", error.message);
-    throw error;
-  }
-}
+  await DashboardMapping.findOneAndUpdate(
+    { projectId: pid },
+    { $set: { [`dashboardId.${moduleName}`]: newId } },
+    { upsert: true, new: true }
+  );
 
-// ==========================================
-// FUNCTION 3: Generate JWT Token
-// ==========================================
-function generateMetabaseJWT(projectId, firstName = "User", lastName = "Soffront", email = null, email_id = null) {
-  const userEmail = email || `tenant-${projectId}@soffront.com`;
+  return newId;
+};
 
+/** Generates Metabase JWT */
+const signToken = (projectId, email_id, user) => {
   const payload = {
     email: email_id,
-    first_name: firstName,
-    last_name: lastName,
+    first_name: user.first_name || "User",
+    last_name: user.last_name || "Soffront",
     groups: ["All Users"],
     project_id: projectId,
     email_id
   };
-
   return jwt.sign(payload, process.env.METABASE_SECRET, { expiresIn: '24h' });
-}
-
-// ==========================================
-// ENDPOINT 1: Get Dashboard ID
-// POST /api/dashboard-id
-// ==========================================
-app.post("/api/dashboard-id", async (req, res) => {
-  try {
-    const { project_id } = req.body;
-
-    if (!project_id) {
-      return res.status(400).json({ error: "Missing project_id" });
-    }
-
-    console.log(`\n📥 Dashboard request: ${project_id}`);
-
-    const dashboardId = await getOrCreateDashboardId(project_id);
-    res.json({ dashboardId });
-  } catch (error) {
-    console.error("Error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ==========================================
-// ENDPOINT 2: Generate JWT
-// POST /sso/metabase
-// ==========================================
-app.post("/sso/metabase", async (req, res) => {
-  try {
-    const { project_id, first_name, last_name, email, email_id } = req.body;
-
-    if (!project_id) {
-      return res.status(400).json({ error: "Missing project_id" });
-    }
-
-    console.log(`\n🔐 SSO request: ${project_id}`);
-
-    const dashboardId = await getOrCreateDashboardId(project_id);
-    const token = generateMetabaseJWT(project_id, first_name, last_name, email, email_id);
-
-    console.log(`✅ JWT generated for dashboard ${dashboardId}`);
-    res.json({ jwt: token });
-  } catch (error) {
-    console.error("Error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ==========================================
-// ENDPOINT 3: Get All Mappings (MongoDB Version)
-// GET /api/dashboard-mapping
-// ==========================================
-app.get("/api/dashboard-mapping", async (req, res) => {
-  try {
-    // ✅ Get all mappings from MongoDB
-    const mappings = await DashboardMapping.find({}).sort({ createdAt: -1 });
-
-    // Convert to old format for compatibility
-    const mappingObject = {};
-    mappings.forEach(m => {
-      mappingObject[m.projectId] = m.dashboardId;
-    });
-
-    res.json({
-      mapping: mappingObject,
-      total: mappings.length,
-      details: mappings
-    });
-  } catch (error) {
-    console.error("Error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ==========================================
-// ENDPOINT 4: Delete Mapping (New)
-// DELETE /api/dashboard-mapping/:projectId
-// ==========================================
-app.delete("/api/dashboard-mapping/:projectId", async (req, res) => {
-  try {
-    const { projectId } = req.params;
-    const projectIdNum = Number(projectId);
-
-    if (isNaN(projectIdNum)) {
-      return res.status(400).json({ error: "Invalid project_id" });
-    }
-
-    // ✅ Delete from MongoDB
-    const result = await DashboardMapping.findOneAndDelete({ projectId: projectIdNum });
-
-    if (!result) {
-      return res.status(404).json({ error: "Mapping not found" });
-    }
-
-    res.json({
-      message: "Mapping deleted successfully",
-      deleted: result
-    });
-  } catch (error) {
-    console.error("Error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ==========================================
-// ENDPOINT 5: Health Check
-// GET /health
-// ==========================================
-app.get("/health", async (req, res) => {
-  try {
-    const count = await DashboardMapping.countDocuments();
-    res.json({
-      status: "ok",
-      database: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
-      dashboards: count,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: "error",
-      error: error.message
-    });
-  }
-});
-
-// ==========================================
-// START SERVER
-// ==========================================
-const startServer = async () => {
-  try {
-    await connectDB();
-
-    app.listen(PORT, () => {
-      console.log("\n==============================================");
-      console.log(`🚀 Metabase SSO Server running on port ${PORT}`);
-      console.log("\nEndpoints:");
-      console.log(" POST   /api/dashboard-id             → Get/Create dashboard");
-      console.log(" POST   /sso/metabase                 → Get JWT token");
-      console.log(" GET    /api/dashboard-mapping        → View all mappings");
-      console.log(" DELETE /api/dashboard-mapping/:id    → Delete mapping");
-      console.log(" GET    /health                       → Health check");
-      console.log("==============================================\n");
-    });
-  } catch (err) {
-    console.error("❌ Failed to start server:", err);
-    process.exit(1);
-  }
 };
 
-// Handle graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('\n⚠️ Shutting down gracefully...');
-  await mongoose.connection.close();
-  console.log('✅ MongoDB connection closed');
-  process.exit(0);
+// --- Routes ---
+
+// 1. Get Dashboard ID
+app.post("/api/dashboard-id", async (req, res) => {
+  try {
+    const moduleName = req.body.module_name || req.body.dashboard_type || 'Management';
+    const dashboardId = await resolveDashboardId(req.body.project_id, moduleName);
+    res.json({ dashboardId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-startServer();
+// 2. SSO / JWT Generation
+app.post("/sso/metabase", async (req, res) => {
+  try {
+    const { project_id, module_name, dashboard_type, email_id, ...userData } = req.body;
+    const moduleToUse = module_name || dashboard_type || 'Management';
 
+    const dashboardId = await resolveDashboardId(project_id, moduleToUse);
+    const token = signToken(project_id, email_id, userData);
 
+    res.json({ jwt: token, dashboardId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
+// 3. Get All Mappings
+app.get("/api/dashboard-mapping", async (req, res) => {
+  try {
+    const mappings = await DashboardMapping.find({}).sort({ createdAt: -1 });
+    const mapObj = mappings.reduce((acc, m) => ({ ...acc, [m.projectId]: m.dashboardId }), {});
+    res.json({ count: mappings.length, mapping: mapObj, details: mappings });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
+// 4. Delete Mapping
+app.delete("/api/dashboard-mapping/:projectId", async (req, res) => {
+  try {
+    const result = await DashboardMapping.findOneAndDelete({ projectId: Number(req.params.projectId) });
+    result ? res.json({ message: "Deleted", result }) : res.status(404).json({ error: "Not Found" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5. Health Check
+app.get("/health", async (req, res) => {
+  res.json({
+    status: "ok",
+    dbState: mongoose.connection.readyState === 1 ? "Connected" : "Disconnected",
+    count: await DashboardMapping.countDocuments()
+  });
+});
+
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+process.on('SIGINT', async () => {
+  await mongoose.connection.close();
+  process.exit(0);
+});

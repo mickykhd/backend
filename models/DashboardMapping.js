@@ -8,8 +8,9 @@ const dashboardMappingSchema = new mongoose.Schema({
     index: true
   },
   dashboardId: {
-    type: Number,
-    required: true
+    type: mongoose.Schema.Types.Mixed,
+    required: true,
+    default: {}
   },
   createdAt: {
     type: Date,
@@ -23,7 +24,7 @@ const dashboardMappingSchema = new mongoose.Schema({
   collection: 'metabase'
 });
 
-dashboardMappingSchema.pre('save', function(next) {
+dashboardMappingSchema.pre('save', function (next) {
   this.updatedAt = Date.now();
   next();
 });
