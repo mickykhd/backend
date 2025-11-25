@@ -19,6 +19,10 @@ const dashboardMappingSchema = new mongoose.Schema({
   updatedAt: {
     type: Date,
     default: Date.now
+  },
+  folderId: {
+    type: Number,
+    required: true,
   }
 }, {
   collection: 'metabase'

@@ -10,13 +10,15 @@ dotenv.config();
 
 // --- Configuration ---
 const PORT = process.env.PORT || 8989;
-const METABASE_URL = "https://analytics.soffront.com";
+const METABASE_URL = "https://analytics.soffront.com"; 
 
 const CONFIG_MAP = {
-  Sales: { templateId: 71, folderId: 17 },
-  Marketing: { templateId: 176, folderId: 20 },
-  Operations: { templateId: 106, folderId: 19 },
+  Sales: { templateId: 71 },
+  Marketing: { templateId: 176 },
+  Operations: { templateId: 106 },
 };
+
+const main_folder_id = 162;
 
 const API_HEADERS = {
   "x-api-key": process.env.METABASE_API_KEY,
@@ -34,78 +36,113 @@ mongoose.connect(process.env.MONGODB_URI, { dbName: 'CRUD_DB' })
 
 // --- Helper Functions ---
 
-/** 1. Create Collection (Folder) - MOVED TO TOP */
-const createCollection = async (projectId, parentFolderId) => {
+/** 1. Get or Create Project Folder */
+const getOrCreateProjectFolder = async (projectId) => {
+  const pid = Number(projectId);
+  
+  // Check if folder already exists in DB
+  const mapping = await DashboardMapping.findOne({ projectId: pid });
+  
+  if (mapping?.folderId) {
+    console.log(`✅ Reusing existing folder ${mapping.folderId} for Project ${pid}`);
+    return mapping.folderId;
+  }
+  
+  // Create new folder if it doesn't exist
   try {
     const { data } = await axios.post(
       `${METABASE_URL}/api/collection`,
       {
-        name: `${projectId}`,
+        name: `Project ${projectId}`,
         description: `Dashboard collection for project ${projectId}`,
-        parent_id: parentFolderId,
+        parent_id: main_folder_id,
         color: "#509EE3"
       },
       { headers: API_HEADERS }
     );
-    return data.id;
+    
+    const newFolderId = data.id;
+    console.log(`✅ Created new folder ${newFolderId} for Project ${pid}`);
+    
+    // Store folder ID in database
+    await DashboardMapping.findOneAndUpdate(
+      { projectId: pid },
+      { 
+        $set: { folderId: newFolderId },
+        $setOnInsert: { 
+          dashboardId: {},
+          createdAt: new Date()
+        }
+      },
+      { upsert: true, new: true }
+    );
+    
+    return newFolderId;
   } catch (error) {
     console.error("Error creating collection:", error.response?.data || error.message);
     throw error;
   }
 };
 
-/** 2. Provision Dashboard (Create Folder First -> Then Copy Content Into It) */
+/** 2. Provision Dashboard (Copy Template into Project Folder) */
 const provisionDashboard = async (projectId, moduleName) => {
   const config = CONFIG_MAP[moduleName];
   if (!config) throw new Error(`Invalid module: ${moduleName}`);
 
   console.log(`⚙️ Provisioning ${moduleName} for Project ${projectId}...`);
 
-  // STEP 1: Create the Tenant Folder first
-  const newCollectionId = await createCollection(projectId, config.folderId);
-  console.log(`✅ Folder Created: ${newCollectionId}`);
+  // Get or create the project folder
+  const projectFolderId = await getOrCreateProjectFolder(projectId);
 
-  // STEP 2: Duplicate Template directly INTO the new folder
-  // By passing 'collection_id', Metabase puts the Dash AND Questions inside it.
+  // Duplicate Template INTO the project folder
   const { data: copyData } = await axios.post(
     `${METABASE_URL}/api/dashboard/${config.templateId}/copy`,
     {
-      name: `Tenant ${projectId} - ${moduleName}`,
-      description: `Generated dashboard for ${projectId}`,
+      name: `${moduleName} Dashboard`,
+      description: `${moduleName} dashboard for Project ${projectId}`,
       is_deep_copy: true,
-      collection_id: newCollectionId // <--- CRITICAL FIX HERE
+      collection_id: projectFolderId // All dashboards go in same project folder
     },
     { headers: API_HEADERS }
   );
 
   const newDashboardId = copyData.id;
-  console.log(`✅ Dashboard ${newDashboardId} created inside Folder ${newCollectionId}`);
+  console.log(`✅ Dashboard ${newDashboardId} (${moduleName}) created in Folder ${projectFolderId}`);
 
   return newDashboardId;
 };
 
-/** Retrieves ID from DB or creates a new dashboard if missing */
+/** 3. Retrieve Dashboard ID from DB or Create New */
 const resolveDashboardId = async (projectId, moduleName) => {
   const pid = Number(projectId);
   if (isNaN(pid)) throw new Error("Invalid Project ID");
 
-  // Check DB
+  // Check if dashboard exists in DB
   const mapping = await DashboardMapping.findOne({ projectId: pid });
-  if (mapping?.dashboardId?.[moduleName]) return mapping.dashboardId[moduleName];
+  if (mapping?.dashboardId?.[moduleName]) {
+    console.log(`✅ Found existing ${moduleName} dashboard: ${mapping.dashboardId[moduleName]}`);
+    return mapping.dashboardId[moduleName];
+  }
 
-  // Provision if missing
-  const newId = await provisionDashboard(pid, moduleName);
+  // Create new dashboard if missing
+  const newDashboardId = await provisionDashboard(pid, moduleName);
 
+  // Store dashboard ID in DB
   await DashboardMapping.findOneAndUpdate(
     { projectId: pid },
-    { $set: { [`dashboardId.${moduleName}`]: newId } },
+    { 
+      $set: { 
+        [`dashboardId.${moduleName}`]: newDashboardId,
+        updatedAt: new Date()
+      }
+    },
     { upsert: true, new: true }
   );
 
-  return newId;
+  return newDashboardId;
 };
 
-/** Generates Metabase JWT */
+/** 4. Generate Metabase JWT */
 const signToken = (projectId, email_id, user) => {
   const payload = {
     email: email_id,
@@ -152,18 +189,34 @@ app.post("/sso/metabase", async (req, res) => {
 app.get("/api/dashboard-mapping", async (req, res) => {
   try {
     const mappings = await DashboardMapping.find({}).sort({ createdAt: -1 });
-    const mapObj = mappings.reduce((acc, m) => ({ ...acc, [m.projectId]: m.dashboardId }), {});
-    res.json({ count: mappings.length, mapping: mapObj, details: mappings });
+    res.json({ 
+      count: mappings.length, 
+      mappings: mappings.map(m => ({
+        projectId: m.projectId,
+        folderId: m.folderId,
+        dashboards: m.dashboardId,
+        createdAt: m.createdAt
+      }))
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 4. Delete Mapping
+// 4. Delete Mapping (Also deletes folder in Metabase)
 app.delete("/api/dashboard-mapping/:projectId", async (req, res) => {
   try {
-    const result = await DashboardMapping.findOneAndDelete({ projectId: Number(req.params.projectId) });
-    result ? res.json({ message: "Deleted", result }) : res.status(404).json({ error: "Not Found" });
+    const mapping = await DashboardMapping.findOne({ projectId: Number(req.params.projectId) });
+    
+    if (!mapping) {
+      return res.status(404).json({ error: "Project Not Found" });
+    }
+    
+    // Optional: Delete the collection from Metabase
+    // await axios.delete(`${METABASE_URL}/api/collection/${mapping.folderId}`, { headers: API_HEADERS });
+    
+    await DashboardMapping.findOneAndDelete({ projectId: Number(req.params.projectId) });
+    res.json({ message: "Deleted successfully", projectId: req.params.projectId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -174,7 +227,7 @@ app.get("/health", async (req, res) => {
   res.json({
     status: "ok",
     dbState: mongoose.connection.readyState === 1 ? "Connected" : "Disconnected",
-    count: await DashboardMapping.countDocuments()
+    projectsCount: await DashboardMapping.countDocuments()
   });
 });
 
