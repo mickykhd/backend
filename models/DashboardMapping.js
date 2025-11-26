@@ -7,6 +7,14 @@ const dashboardMappingSchema = new mongoose.Schema({
     unique: true,
     index: true
   },
+  folderId: {
+    type: Number,
+    required: true,
+  },
+  groupId: {
+    type: Number,
+    required: true,
+  },
   dashboardId: {
     type: mongoose.Schema.Types.Mixed,
     required: true,
@@ -19,10 +27,6 @@ const dashboardMappingSchema = new mongoose.Schema({
   updatedAt: {
     type: Date,
     default: Date.now
-  },
-  folderId: {
-    type: Number,
-    required: true,
   }
 }, {
   collection: 'metabase'

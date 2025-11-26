@@ -36,7 +36,80 @@ mongoose.connect(process.env.MONGODB_URI, { dbName: 'CRUD_DB' })
 
 // --- Helper Functions ---
 
-/** 1. Get or Create Project Folder */
+/** 1. Create or Get Metabase Group for Tenant */
+const getOrCreateMetabaseGroup = async (projectId) => {
+  const groupName = `Tenant_${projectId}`;
+  
+  try {
+    // Get all groups
+    const { data: groups } = await axios.get(
+      `${METABASE_URL}/api/permissions/group`,
+      { headers: API_HEADERS }
+    );
+    
+    // Check if group exists
+    const existingGroup = groups.find(g => g.name === groupName);
+    if (existingGroup) {
+      console.log(`✅ Found existing group: ${groupName} (ID: ${existingGroup.id})`);
+      return existingGroup.id;
+    }
+    
+    // Create new group
+    const { data: newGroup } = await axios.post(
+      `${METABASE_URL}/api/permissions/group`,
+      { name: groupName },
+      { headers: API_HEADERS }
+    );
+    
+    console.log(`✅ Created new group: ${groupName} (ID: ${newGroup.id})`);
+    return newGroup.id;
+  } catch (error) {
+    console.error("Error managing group:", error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/** 2. Set Collection Permissions for Group */
+const setCollectionPermissions = async (collectionId, groupId) => {
+  try {
+    // Get current permission graph
+    const { data: permGraph } = await axios.get(
+      `${METABASE_URL}/api/collection/graph`,
+      { headers: API_HEADERS }
+    );
+    
+    // Update permissions for this collection
+    // Grant "write" (Curate) access to the tenant group
+    if (!permGraph.groups[groupId]) {
+      permGraph.groups[groupId] = {};
+    }
+    permGraph.groups[groupId][collectionId] = "write";
+    
+    // Remove "All Users" access to this collection (important for isolation)
+    const allUsersGroupId = permGraph.groups["1"] ? "1" : 
+                           Object.keys(permGraph.groups).find(id => 
+                             permGraph.groups[id].name === "All Users"
+                           );
+    
+    if (allUsersGroupId && permGraph.groups[allUsersGroupId]) {
+      permGraph.groups[allUsersGroupId][collectionId] = "none";
+    }
+    
+    // Apply updated permissions
+    await axios.put(
+      `${METABASE_URL}/api/collection/graph`,
+      { ...permGraph },
+      { headers: API_HEADERS }
+    );
+    
+    console.log(`✅ Set permissions for collection ${collectionId}, group ${groupId}`);
+  } catch (error) {
+    console.error("Error setting permissions:", error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/** 3. Get or Create Project Folder */
 const getOrCreateProjectFolder = async (projectId) => {
   const pid = Number(projectId);
   
@@ -45,11 +118,14 @@ const getOrCreateProjectFolder = async (projectId) => {
   
   if (mapping?.folderId) {
     console.log(`✅ Reusing existing folder ${mapping.folderId} for Project ${pid}`);
-    return mapping.folderId;
+    return { folderId: mapping.folderId, groupId: mapping.groupId };
   }
   
-  // Create new folder if it doesn't exist
   try {
+    // Step 1: Create Metabase group for this tenant
+    const groupId = await getOrCreateMetabaseGroup(projectId);
+    
+    // Step 2: Create folder
     const { data } = await axios.post(
       `${METABASE_URL}/api/collection`,
       {
@@ -64,11 +140,18 @@ const getOrCreateProjectFolder = async (projectId) => {
     const newFolderId = data.id;
     console.log(`✅ Created new folder ${newFolderId} for Project ${pid}`);
     
-    // Store folder ID in database
+    // Step 3: Set permissions - only this tenant's group can access
+    await setCollectionPermissions(newFolderId, groupId);
+    
+    // Step 4: Store in database
     await DashboardMapping.findOneAndUpdate(
       { projectId: pid },
       { 
-        $set: { folderId: newFolderId },
+        $set: { 
+          folderId: newFolderId,
+          groupId: groupId,
+          updatedAt: new Date()
+        },
         $setOnInsert: { 
           dashboardId: {},
           createdAt: new Date()
@@ -77,22 +160,22 @@ const getOrCreateProjectFolder = async (projectId) => {
       { upsert: true, new: true }
     );
     
-    return newFolderId;
+    return { folderId: newFolderId, groupId };
   } catch (error) {
     console.error("Error creating collection:", error.response?.data || error.message);
     throw error;
   }
 };
 
-/** 2. Provision Dashboard (Copy Template into Project Folder) */
+/** 4. Provision Dashboard (Copy Template into Project Folder) */
 const provisionDashboard = async (projectId, moduleName) => {
   const config = CONFIG_MAP[moduleName];
   if (!config) throw new Error(`Invalid module: ${moduleName}`);
 
   console.log(`⚙️ Provisioning ${moduleName} for Project ${projectId}...`);
 
-  // Get or create the project folder
-  const projectFolderId = await getOrCreateProjectFolder(projectId);
+  // Get or create the project folder (and group)
+  const { folderId: projectFolderId } = await getOrCreateProjectFolder(projectId);
 
   // Duplicate Template INTO the project folder
   const { data: copyData } = await axios.post(
@@ -101,7 +184,7 @@ const provisionDashboard = async (projectId, moduleName) => {
       name: `${moduleName} Dashboard`,
       description: `${moduleName} dashboard for Project ${projectId}`,
       is_deep_copy: true,
-      collection_id: projectFolderId // All dashboards go in same project folder
+      collection_id: projectFolderId
     },
     { headers: API_HEADERS }
   );
@@ -112,7 +195,7 @@ const provisionDashboard = async (projectId, moduleName) => {
   return newDashboardId;
 };
 
-/** 3. Retrieve Dashboard ID from DB or Create New */
+/** 5. Retrieve Dashboard ID from DB or Create New */
 const resolveDashboardId = async (projectId, moduleName) => {
   const pid = Number(projectId);
   if (isNaN(pid)) throw new Error("Invalid Project ID");
@@ -142,16 +225,19 @@ const resolveDashboardId = async (projectId, moduleName) => {
   return newDashboardId;
 };
 
-/** 4. Generate Metabase JWT */
+/** 6. Generate Metabase JWT with Tenant-Specific Group */
 const signToken = (projectId, email_id, user) => {
+  const tenantGroup = `Tenant_${projectId}`; // Must match group name in Metabase
+
   const payload = {
     email: email_id,
     first_name: user.first_name || "User",
     last_name: user.last_name || "Soffront",
-    groups: ["All Users"],
+    groups: [tenantGroup], // This maps to Metabase group
     project_id: projectId,
     email_id
   };
+
   return jwt.sign(payload, process.env.METABASE_SECRET, { expiresIn: '24h' });
 };
 
@@ -194,8 +280,10 @@ app.get("/api/dashboard-mapping", async (req, res) => {
       mappings: mappings.map(m => ({
         projectId: m.projectId,
         folderId: m.folderId,
+        groupId: m.groupId,
         dashboards: m.dashboardId,
-        createdAt: m.createdAt
+        createdAt: m.createdAt,
+        updatedAt: m.updatedAt
       }))
     });
   } catch (err) {
@@ -203,7 +291,7 @@ app.get("/api/dashboard-mapping", async (req, res) => {
   }
 });
 
-// 4. Delete Mapping (Also deletes folder in Metabase)
+// 4. Delete Mapping
 app.delete("/api/dashboard-mapping/:projectId", async (req, res) => {
   try {
     const mapping = await DashboardMapping.findOne({ projectId: Number(req.params.projectId) });
@@ -212,8 +300,9 @@ app.delete("/api/dashboard-mapping/:projectId", async (req, res) => {
       return res.status(404).json({ error: "Project Not Found" });
     }
     
-    // Optional: Delete the collection from Metabase
+    // Optional: Delete collection and group from Metabase
     // await axios.delete(`${METABASE_URL}/api/collection/${mapping.folderId}`, { headers: API_HEADERS });
+    // await axios.delete(`${METABASE_URL}/api/permissions/group/${mapping.groupId}`, { headers: API_HEADERS });
     
     await DashboardMapping.findOneAndDelete({ projectId: Number(req.params.projectId) });
     res.json({ message: "Deleted successfully", projectId: req.params.projectId });
