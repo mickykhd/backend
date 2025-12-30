@@ -19,7 +19,7 @@ const CONFIG_MAP = {
 };
 
 const main_folder_id = 162;
-const TEMPLATE_GROUP_ID = 54;
+const TEMPLATE_GROUP_ID = 269;
 
 const API_HEADERS = {
   'x-api-key': process.env.METABASE_API_KEY,
@@ -491,3 +491,4 @@ process.on('SIGINT', async () => {
   await mongoose.connection.close();
   process.exit(0);
 });
+
